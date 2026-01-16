@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import os
+from scipy.io.wavfile import write
 from scipy.io import wavfile
 
 def load_WavData(path):
@@ -24,11 +25,7 @@ def voice_similarity(signal_a, signal_b, threshold=0.09):
 
 def same_voice(signal_a, signal_b, threshold=0.09):
     _, ratio = voice_similarity(signal_a, signal_b, threshold)
-    return ratio > 0.5
-
-def same_voice_euclidean(signal_a, signal_b, distance_threshold):
-    dist = euclidean_distance(signal_a, signal_b)
-    return dist < distance_threshold, dist
+    return ratio < 0.5
 
 def population_fitness(reference_signals, input_signal, threshold=0.09):
     fitness_values = []
@@ -46,18 +43,12 @@ def roulette_selection(fitness_values, num_select=2):
     else:
         probs = fitness_values / total_fitness
 
-    selected_indices = np.random.choice(
-        len(fitness_values),
-        size=num_select,
-        replace=False,
-        p=probs
-    )
+    selected_indices = np.random.choice( len(fitness_values), size=num_select, replace=False, p=probs)
     return selected_indices
 
 def one_point_crossover(parent1, parent2):
     n = len(parent1)
     cp = int(np.log2(n + 1))
-
     if cp <= 0 or cp >= n:
         cp = n // 2 
 
@@ -81,28 +72,37 @@ def select_best_offspring(child1, child2, input_signal, threshold=0.09):
 def mutate_offspring(offspring):
     n = len(offspring)
     mp = int(np.log2(n + 1))
-
     if mp <= 0 or mp >= n:
-        mp = n // 2  # seguridad
+        mp = n // 2
 
     mutated = offspring.copy()
     mutated[mp] = -mutated[mp]
-
     return mutated, mp
 
 def mutated_offspring_fitness(mutated, input_signal, threshold=0.09):
     _, ratio = voice_similarity(mutated, input_signal, threshold)
     return ratio ** 2
 
-def euclidean_distance(signal_a, signal_b):
-    if len(signal_a) != len(signal_b):
-        raise ValueError("Las señales deben tener la misma longitud")
+def normalize_signal(sig):
+    sig = sig.astype(np.float32)
+    max_val = np.max(np.abs(sig))
+    if max_val > 0:
+        sig = sig / max_val
+    return sig
 
-    diff = signal_a - signal_b
-    return np.sqrt(np.sum(diff ** 2))
+def save_wav(path, sample_rate, signal):
+    max_val = np.max(np.abs(signal))
+    if max_val == 0:
+        return signal.astype(np.int16)
+    scaled = signal / max_val
+    signal_int16 = np.int16(scaled * 32767)
+    write(path, sample_rate, signal_int16)
 
 def run_ga(reference_signals, input_signal, max_generations=50, improvement_tol=1e-6):
     fitness = population_fitness(reference_signals, input_signal)
+    print("\nFitness:")
+    for name, f in zip(reference_names, fitness):
+        print(f"{name}: {f:.6f}")
 
     # Mejor referencia inicial
     best_idx = np.argmax(fitness)
@@ -133,28 +133,38 @@ def run_ga(reference_signals, input_signal, max_generations=50, improvement_tol=
             current_best = mutated_child
             current_best_fitness = mutated_fitness
 
+    print("\nPadres seleccionados:")
+    print(reference_names[idx[0]])
+    print(reference_names[idx[1]])
+    print("\nCrossover point:", cp)
+    print("Best offspring fitness:", best_child_fitness)
+    print("Mutation point:", mp)
+    print("Fitness after mutation:", mutated_fitness)
     return current_best, current_best_fitness
 
 if __name__ == "__main__":
     # 1. Cargar inputs
-    inputs = { "input1.wav": None, "input2.wav": None}
-    for name in inputs:
+    inputs = {}
+    for name in ["input1.wav", "input2.wav"]:
         fs, sig = load_WavData(name)
+        sig = normalize_signal(sig)
         inputs[name] = sig
 
     # 2. Cargar referencias
     refs_dir = "refs"
     reference_signals = []
     reference_names = []
+
     for filename in os.listdir(refs_dir):
         if filename.lower().endswith(".wav"):
             path = os.path.join(refs_dir, filename)
             try:
                 fs, sig = load_WavData(path)
+                sig = normalize_signal(sig)
                 reference_signals.append(sig)
                 reference_names.append(filename)
             except Exception as e:
-                print(f"⚠️ Error cargando {filename}: {e}")
+                print(f"Error cargando {filename}: {e}")
 
     if len(reference_signals) < 2:
         raise RuntimeError("Se necesitan al menos 2 archivos de referencia")
@@ -165,23 +175,23 @@ if __name__ == "__main__":
         print(f"Procesando {input_name}")
         print("=" * 50)
 
-        refs_aligned = np.array(reference_signals)
-        expected_len = len(input_signal)
-        for i, ref in enumerate(refs_aligned):
-            if len(ref) != expected_len:
-                raise ValueError(
-                    f"Longitud distinta en referencia {reference_names[i]}")
+        # Ajuste de longitudes
+        min_len = min(len(input_signal), *[len(ref) for ref in reference_signals])
+        input_aligned = input_signal[:min_len]
+        refs_aligned = np.array([ref[:min_len] for ref in reference_signals])
+        print(f"Longitud usada: {min_len} muestras")
 
         # 4. Ejecutar GA
-        best_sound, best_fitness = run_ga(refs_aligned, input_signal, max_generations=50)
+        best_sound, best_fitness = run_ga(refs_aligned,input_aligned,max_generations=50)
         print("\nResultado GA:")
         print("Fitness final:", best_fitness)
 
         # 5. Comparación final (paper 3.3)
         # (a) Threshold
-        same_thr = same_voice(best_sound, input_signal)
+        same_thr = same_voice(best_sound, input_aligned)
+
         # (b) Distancia euclidiana
-        euclid_dist = np.linalg.norm(best_sound - input_signal)
+        euclid_dist = np.linalg.norm(best_sound - input_aligned)
 
         print("\nComparación final:")
         print("Threshold match:", same_thr)
@@ -191,3 +201,7 @@ if __name__ == "__main__":
             print("MISMA VOZ")
         else:
             print("NO ES LA MISMA VOZ")
+
+    output_name = f"ga_result_{input_name.replace('.wav','')}.wav"
+    save_wav(output_name, fs, best_sound)
+    print(f"\nAudio GA guardado como: {output_name}")
