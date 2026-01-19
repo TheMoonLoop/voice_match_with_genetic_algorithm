@@ -1,4 +1,4 @@
-# voice_match_with_genetic_algorithm
+# Voice Match with Genetic Algorithm
 Final project for my evolutionary computing class
 
 **From my abstract:**
